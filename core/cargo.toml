@@ -1,0 +1,69 @@
+[package]
+name = "academic-phantom"
+version = "1.0.0"
+edition = "2021"
+authors = ["Security Research"]
+description = "Educational malware research framework"
+build = "build.rs"
+
+[lib]
+name = "academic_phantom"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "phantom"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+reqwest = { version = "0.11", features = ["json", "native-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+aes-gcm = "0.10"
+aes = "0.8"
+rsa = { version = "0.9", features = ["sha2"] }
+sha2 = "0.10"
+base64 = "0.21"
+flate2 = "1.0"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+walkdir = "2.4"
+sysinfo = "0.29"
+whoami = "1.4"
+winreg = "0.50"
+image = { version = "0.24", default-features = false, features = ["png"] }
+rand = "0.8"
+chrono = "0.4"
+regex = "1.10"
+dirs = "5.0"
+lettre = { version = "0.10", optional = true }
+sqlite = "0.32"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.48", features = [
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Registry",
+    "Win32_System_Services",
+    "Win32_Security",
+    "Win32_Security_Credentials",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_Networking_WinSock",
+    "Win32_Storage_FileSystem",
+]}
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 0
+debug = true

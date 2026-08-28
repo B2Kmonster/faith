@@ -1,0 +1,171 @@
+use std::process::Command;
+use sysinfo::{System, SystemExt, ProcessExt, NetworkExt};
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct SystemProfile {
+    pub hostname: String,
+    pub username: String,
+    pub domain: String,
+    pub os_version: String,
+    pub cpu: String,
+    pub ram_gb: u64,
+    pub processes: Vec<ProcessInfo>,
+    pub network: NetworkInfo,
+    pub installed_apps: Vec<String>,
+    pub antivirus: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ProcessInfo {
+    pub name: String,
+    pub pid: u32,
+    pub memory_mb: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct NetworkInfo {
+    pub interfaces: Vec<Interface>,
+    pub public_ip: Option<String>,
+    pub internal_ips: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Interface {
+    pub name: String,
+    pub mac: String,
+    pub ips: Vec<String>,
+}
+
+pub struct DiscoveryEngine;
+
+impl DiscoveryEngine {
+    pub fn full_system_audit() -> SystemProfile {
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        
+        SystemProfile {
+            hostname: whoami::hostname(),
+            username: whoami::username(),
+            domain: Self::get_domain(),
+            os_version: Self::get_os_version(),
+            cpu: sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default(),
+            ram_gb: sys.total_memory() / 1024 / 1024,
+            processes: Self::enumerate_processes(&sys),
+            network: Self::enumerate_network(&sys),
+            installed_apps: Self::get_installed_software(),
+            antivirus: Self::detect_av(),
+        }
+    }
+    
+    fn get_domain() -> String {
+        Command::new("cmd")
+            .args(&["/c", "echo %USERDOMAIN%"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    }
+    
+    fn get_os_version() -> String {
+        Command::new("wmic")
+            .args(&["os", "get", "Caption", "/value"])
+            .output()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .replace("Caption=", "")
+                    .trim()
+                    .to_string()
+            })
+            .unwrap_or_default()
+    }
+    
+    fn enumerate_processes(sys: &System) -> Vec<ProcessInfo> {
+        sys.processes()
+            .values()
+            .map(|p| ProcessInfo {
+                name: p.name().to_string(),
+                pid: p.pid().as_u32(),
+                memory_mb: p.memory() / 1024,
+            })
+            .collect()
+    }
+    
+    fn enumerate_network(sys: &System) -> NetworkInfo {
+        let mut interfaces = Vec::new();
+        let mut internal_ips = Vec::new();
+        
+        for (name, data) in sys.networks() {
+            let ips: Vec<String> = data.ip_networks()
+                .iter()
+                .map(|ip| ip.to_string())
+                .collect();
+            
+            for ip in &ips {
+                if !ip.starts_with("127.") {
+                    internal_ips.push(ip.clone());
+                }
+            }
+            
+            interfaces.push(Interface {
+                name: name.to_string(),
+                mac: data.mac_address().to_string(),
+                ips,
+            });
+        }
+        
+        NetworkInfo {
+            interfaces,
+            public_ip: Self::get_public_ip(),
+            internal_ips,
+        }
+    }
+    
+    fn get_public_ip() -> Option<String> {
+        // Check if internet available
+        let output = Command::new("curl")
+            .args(&["-s", "--max-time", "5", "https://api.ipify.org"])
+            .output()
+            .ok()?;
+        
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+    
+    fn get_installed_software() -> Vec<String> {
+        let mut apps = Vec::new();
+        
+        // Query registry for installed software
+        let hkcu = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE);
+        let uninstall = hkcu.open_subkey(
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+        ).ok();
+        
+        if let Ok(uninstall) = uninstall {
+            for key in uninstall.enum_keys().flatten() {
+                if let Ok(subkey) = uninstall.open_subkey(&key) {
+                    if let Ok(name) = subkey.get_value::<String, _>("DisplayName") {
+                        apps.push(name);
+                    }
+                }
+            }
+        }
+        
+        apps
+    }
+    
+    fn detect_av() -> Vec<String> {
+        let av_processes = vec![
+            "MsMpEng.exe", "SecurityHealthService.exe", "MsSense.exe",
+            "avastsvc.exe", "avgsvc.exe", "mcshield.exe", "ccsvchst.exe",
+            "ekrn.exe", "bdagent.exe", "avp.exe"
+        ];
+        
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        
+        sys.processes()
+            .values()
+            .filter(|p| av_processes.contains(&p.name().to_lowercase().as_str()))
+            .map(|p| p.name().to_string())
+            .collect()
+    }
+}
